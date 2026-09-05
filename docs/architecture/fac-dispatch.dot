@@ -1,0 +1,112 @@
+// Frappe Assistant Core - request dispatch chain (current state, evidence-backed)
+// Produced by system-modeler + graphviz skills, 2026-09-05, repo v2.5.1.
+// rankdir=TB (dense Canvas-oriented graph). Dashed edges = low confidence / inferred.
+digraph fac_dispatch {
+  rankdir=TB;
+  compound=true;
+  nodesep=0.45;
+  ranksep=0.6;
+  node [fontname="Helvetica", fontsize=10, shape=box, style="rounded,filled", fillcolor="#F5F5F5", color="#777777", margin="0.12,0.08"];
+  edge [fontname="Helvetica", fontsize=9, color="#555555"];
+
+  // ---- 1. Client side (outside the Frappe site) ----
+  subgraph cluster_client {
+    label="1. Client side (outside site)";
+    style="rounded,dashed";
+    color="#AAAAAA";
+    client [label="MCP LLM Client\nClaude Desktop/Web · ChatGPT · Inspector", fillcolor="#E8F0FE", color="#4A78C2"];
+    dxt [label="Claude Desktop stdio bridge (optional)\nclient_packages/claude-desktop\nStdioMCPWrapper → HTTP", fillcolor="#E8F0FE", color="#4A78C2"];
+  }
+
+  // ---- 2. HTTP & auth (api/) ----
+  subgraph cluster_http {
+    label="2. HTTP & authentication — api/";
+    style="rounded";
+    color="#4A9B6E";
+    oauth [label="OAuth endpoint suite\n.well-known renderer · RFC 7591 register\ntoken + openid overrides\napi/oauth_discovery.py · oauth_token.py\noauth_registration.py · oauth_wellknown_renderer.py", fillcolor="#E6F4EA", color="#4A9B6E"];
+    endpoint [label="handle_mcp()\n@whitelisted(allow_guest) POST/GET/HEAD\napi/fac_endpoint.py:330-344", fillcolor="#E6F4EA", color="#4A9B6E"];
+    auth [label="_authenticate_mcp_request()\nBearer → OAuth Bearer Token doctype\ntoken key:secret → User.api_key\n→ frappe.set_user(user)\napi/fac_endpoint.py:161-327", fillcolor="#E6F4EA", color="#4A9B6E"];
+    enabled [label="_check_assistant_enabled()\nUser.assistant_enabled custom field\napi/fac_endpoint.py:43-51", fillcolor="#E6F4EA", color="#4A9B6E"];
+  }
+
+  // ---- 3. MCP core (mcp/) ----
+  subgraph cluster_mcp {
+    label="3. MCP core (hand-rolled, no SDK) — mcp/";
+    style="rounded";
+    color="#C29A3B";
+    mcp [label="MCPServer.handle()  JSON-RPC 2.0 router\ninitialize · tools/list · tools/call\nresources/list|read|templates · prompts/list|get · ping\nmcp/server.py:142-243  (protocol 2025-06-18 default)\nper-request registry passed in: mcp/server.py:118-136", fillcolor="#FEF7E0", color="#C29A3B"];
+    adapter [label="tool_adapter.build_tool_dict()\nBaseTool → MCP tool schema\nmcp/tool_adapter.py:27,56", fillcolor="#FEF7E0", color="#C29A3B"];
+    session [label="correlation IDs\nMcp-Session-Id / X-Assistant-Client-Id\nmcp/server.py:256-287", fillcolor="#FEF7E0", color="#C29A3B"];
+  }
+
+  // ---- 4. Discovery & dispatch (core/, utils/, plugins/) ----
+  subgraph cluster_dispatch {
+    label="4. Discovery & dispatch — core/ · utils/ · plugins/";
+    style="rounded";
+    color="#B05A5A";
+    registry [label="ToolRegistry.get_available_tools(user)\nfilters: plugin state · FAC Tool Configuration\nFAC Tool Role Access\ncore/tool_registry.py:34-42,374-429", fillcolor="#FDECEC", color="#B05A5A"];
+    pm [label="PluginManager (singleton)\nfilesystem discovery of plugins/*/plugin.py\nutils/plugin_manager.py:90-195", fillcolor="#FDECEC", color="#B05A5A"];
+    pCore [label="Core plugin — 17 tools\ndocument CRUD · search · reports\nworkflow · approvals\nplugins/core/plugin.py:42-72", fillcolor="#FDECEC", color="#B05A5A"];
+    pDS [label="Data Science plugin — 4 tools\nrun_python_code · analyze_business_data\nrun_database_query · extract_file_content\nplugins/data_science/plugin.py:53-60", fillcolor="#FDECEC", color="#B05A5A"];
+    pViz [label="Visualization plugin — 3 tools\ndashboards & charts\nplugins/visualization/plugin.py:53-59", fillcolor="#FDECEC", color="#B05A5A"];
+    pCustom [label="Custom Tools plugin (dynamic)\nplugins/custom_tools/plugin.py:27-123", fillcolor="#FDECEC", color="#B05A5A"];
+    basetool [label="BaseTool.execute() → _safe_execute()\ncore/base_tool.py:96,173", fillcolor="#FDECEC", color="#B05A5A"];
+    hooktools [label="External Frappe apps\nhooks.py: assistant_tools / assistant_skills\n(imported at request time)", shape=note, fillcolor="#FFF8E8"];
+  }
+
+  // ---- 5. Execution & security ----
+  subgraph cluster_exec {
+    label="5. Execution & security";
+    style="rounded";
+    color="#8A6FBF";
+    sandbox [label="code_execution_subprocess\ndisposable Popen · JSON over stdin\nRLIMIT_CPU/AS · SIGALRM · import allowlist\nrestricted __builtins__\nutils/code_execution_subprocess.py:20-21,138-206", fillcolor="#F1EBFA", color="#8A6FBF"];
+    ocr [label="ocr_subprocess (optional)\npaddleocr OCR\nutils/ocr_subprocess.py", fillcolor="#F1EBFA", color="#8A6FBF"];
+  }
+
+  // ---- 6. Persistence & infra (Frappe-managed) ----
+  subgraph cluster_data {
+    label="6. Persistence & infra (Frappe-managed)";
+    style="rounded";
+    color="#555555";
+    orm [label="Frappe ORM\nfrappe.get_doc · get_list · db.\nruns under requesting user's permissions", fillcolor="#EEEEEE"];
+    mariadb [label="Site DB (MariaDB)\nbusiness DocTypes + 9 FAC DocTypes\nAssistant Audit Log · Assistant Core Settings\nFAC Skill · Prompt Template (+Args, +Category)\nFAC Plugin/Tool Configuration · Tool Role Access", shape=cylinder, fillcolor="#E0E0E0"];
+    auditlog [label="audit_trail.log_tool_execution()\nsanitized args · output ≤ 50 KB\nutils/audit_trail.py:62-147", shape=note, fillcolor="#FFF8E8"];
+    redisn [label="frappe.cache (Redis)\nsettings 1800s · tool config 60s\ndashboard 300s · health 600s\nutils/cache.py:32-109", shape=cylinder, fillcolor="#E0E0E0"];
+    sched [label="Frappe scheduler (cron)\ncleanup_old_logs  0 0 * * *\nwarm_cache  */30 * * * *\nhooks.py:146-152", shape=component, fillcolor="#EEEEEE"];
+  }
+
+  // ---- Edges ----
+  client -> endpoint [label="HTTPS POST JSON-RPC\nMCP StreamableHTTP (no SSE)\nBearer token or token key:secret"];
+  client -> oauth [label="OAuth 2.0 + PKCE (S256)\ndiscover · register · authorize · token"];
+  dxt -> endpoint [label="forwards JSON-RPC\n+ session/client-ID headers"];
+  endpoint -> auth [label="per request"];
+  auth -> enabled [label="user gate"];
+  endpoint -> mcp [label="_build_tool_registry() per request\napi/fac_endpoint.py:54-109"];
+  mcp -> registry [label="tools/list · tools/call"];
+  registry -> pm [label="plugin instances"];
+  pm -> pCore;
+  pm -> pDS;
+  pm -> pViz;
+  pm -> pCustom;
+  hooktools -> pCustom [label="frappe.get_hooks('assistant_tools')"];
+  pCore -> adapter [label="tool schemas"];
+  pDS -> adapter;
+  pViz -> adapter;
+  pCustom -> adapter;
+  adapter -> mcp [label="tools/list payload", style=dotted];
+  registry -> basetool [label="tools/call dispatch"];
+  pDS -> sandbox [label="run_python_code\nPopen stdin/stdout JSON"];
+  sandbox -> ocr [label="file OCR path", style=dotted];
+  pCore -> orm [label="documents · search\nreports · workflows"];
+  pDS -> orm [label="queries · analysis data"];
+  pViz -> orm [label="dashboard creation"];
+  orm -> mariadb [label="SQL under user permissions"];
+  basetool -> auditlog [label="every execution\ncore/base_tool.py:427"];
+  auditlog -> mariadb [label="insert(ignore_permissions=True)"];
+  registry -> redisn [label="tool-config cache"];
+  sched -> mariadb [label="purge old audit logs"];
+  sched -> redisn [label="warm caches"];
+  mcp -> endpoint [label="plain werkzeug JSON response", style=dotted];
+  endpoint -> client [label="JSON response (sync request/response)", style=dotted];
+  sandbox -> mariadb [label="analysis data access (inferred —\nnot traced in this pass)", style=dashed, color="#B05A5A"];
+}
