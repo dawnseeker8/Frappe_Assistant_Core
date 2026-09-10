@@ -143,15 +143,31 @@ def _get_default_oauth_settings():
     )
 
 
-def _has_http_localhost_uris(client_metadata):
-    """Check if client has HTTP localhost redirect URIs (allowed in production per RFC 8252)"""
+def _has_native_client_uris(client_metadata):
+    """
+    Check if client uses native-client redirect URIs that should bypass Frappe v16's
+    strict HTTPS-only validation, per RFC 8252:
+
+      (a) http + loopback address (localhost / 127.0.0.1 / ::1)  — RFC 8252 §8.3
+      (b) custom scheme (non-http/https) with netloc              — RFC 8252 §7.1
+          e.g. workbuddy://, vscode://, cursor:// (desktop deep-link callbacks)
+    """
     from urllib.parse import urlparse
 
     for uri in client_metadata.redirect_uris:
         parsed = urlparse(str(uri))
-        if parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1", "::1"):
+        scheme = (parsed.scheme or "").lower()
+
+        if scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1", "::1"):
             return True
+
+        if scheme and scheme not in ("http", "https") and parsed.netloc:
+            return True
+
     return False
+
+
+_has_http_localhost_uris = _has_native_client_uris
 
 
 def create_oauth_client(client_metadata):
@@ -278,7 +294,8 @@ def validate_dynamic_client_metadata(client_metadata):
 
     For v15: Uses our custom validation logic
     For v16+: Uses native frappe.integrations.utils.validate_dynamic_client_metadata
-              (except for HTTP localhost URIs in production, which use custom validation)
+              (except for native client URIs — http loopback and custom schemes —
+              which use custom validation per RFC 8252)
 
     Args:
             client_metadata: OAuth2DynamicClientMetadata pydantic model
@@ -289,7 +306,7 @@ def validate_dynamic_client_metadata(client_metadata):
     use_custom_validation = False
 
     if is_frappe_v16_or_later():
-        if _has_http_localhost_uris(client_metadata):
+        if _has_native_client_uris(client_metadata):
             use_custom_validation = True
         else:
             from frappe.integrations.utils import validate_dynamic_client_metadata as v16_validate
@@ -317,8 +334,17 @@ def validate_dynamic_client_metadata(client_metadata):
         for uri in client_metadata.redirect_uris:
             uri_str = str(uri)
             parsed_uri = urlparse(uri_str)
+            scheme = (parsed_uri.scheme or "").lower()
 
-            if parsed_uri.scheme != "https":
+            # Custom scheme (native client deep-link, e.g. workbuddy://): accept per RFC 8252 §7.1
+            if scheme and scheme not in ("http", "https"):
+                if not parsed_uri.netloc:
+                    invalidation_reasons.append(
+                        f"redirect_uri '{uri_str}' is not a valid absolute URI"
+                    )
+                continue
+
+            if scheme != "https":
                 is_localhost = parsed_uri.hostname in ("localhost", "127.0.0.1", "::1")
                 if not is_localhost and not frappe.conf.developer_mode:
                     invalidation_reasons.append(
